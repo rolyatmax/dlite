@@ -6,7 +6,7 @@ $ npm i && npm start
 ```
 
 ### To do
- - [ ] ship a smaller dataset with the demo
+ - [x] ship a smaller dataset with the demo
  - [ ] incorporate animation in demo
  - [ ] consider using deck's map controller instead of mapbox because mapbox has such a lag it causes the two canvas to go out of sync
  - [ ] figure out where `altitude` comes from in web-mercator-projection stuff
