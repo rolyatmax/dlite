@@ -1,0 +1,23 @@
+{
+  "scripts": {
+    "start": "budo demo.js --live --open -- -p esmify"
+  },
+  "eslintConfig": {
+    "extends": [
+      "standard"
+    ]
+  },
+  "dependencies": {
+    "budo": "^11.6.2",
+    "canvas-fit": "^1.5.0",
+    "dat.gui": "^0.7.6",
+    "eslint": "^6.1.0",
+    "esmify": "^2.1.1",
+    "gl-mat4": "^1.2.0",
+    "gl-vec2": "^1.3.0",
+    "gl-vec4": "^1.0.1",
+    "mapbox-gl": "^1.2.0",
+    "picogl": "^0.14.0",
+    "standard": "^13.1.0"
+  }
+}
