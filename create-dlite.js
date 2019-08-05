@@ -1,13 +1,18 @@
-// TODO:
-// * consider using deck's map controller instead of mapbox because mapbox has such a lag it causes the two canvas to go out of sync
-// * figure out where `altitude` comes from in web-mercator-projection stuff
-
 // const { PicoGL } = require('./node_modules/picogl/src/picogl')
 const PicoGL = require('picogl')
 const fit = require('canvas-fit')
 const mapboxgl = require('mapbox-gl')
 const mat4 = require('gl-mat4')
 const vec4 = require('gl-vec4')
+const {
+  getViewMatrix,
+  getDistanceScales,
+  getProjectionParameters,
+  lngLatToWorld,
+  worldToPixels,
+  pixelsToWorld,
+  worldToLngLat
+} = require('viewport-mercator-project')
 
 const RETURN = `
 `
@@ -106,7 +111,7 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
     // can pass in any updates to draw call EXCEPT vs and fs changes:
     // { uniforms, vertexArray, primitive, count, instanceCount?, framebuffer, parameters }
     return function render (renderOpts) {
-      const NOT_SUPPORTED_YET = ['attributes', 'instanceCount', 'parameters', 'framebuffer']
+      const NOT_SUPPORTED_YET = ['vertexArray', 'instanceCount', 'parameters', 'framebuffer']
       for (const opt of NOT_SUPPORTED_YET) {
         if (opt in renderOpts) throw new Error(`Updating option \`${opt}\` in render() call is not implemented yet`)
       }
@@ -207,16 +212,6 @@ vec4 project_position_to_clipspace(vec3 position, vec3 offset) {
 `
 
 // --------------------------------------------------------------------------------------------------
-
-const {
-  getViewMatrix,
-  getDistanceScales,
-  getProjectionParameters,
-  lngLatToWorld,
-  worldToPixels,
-  pixelsToWorld,
-  worldToLngLat
-} = require('viewport-mercator-project')
 
 // To quickly set a vector to zero
 const ZERO_VECTOR = [0, 0, 0, 0]
