@@ -6,30 +6,13 @@ const createLoopToggle = require('./helpers/create-loop')
 
 const MAPBOX_TOKEN = require('./mapbox-token')
 
-const DATA_PATH = 'data/cabspotting.binary'
-
-// OUTPUTS: 32FloatArray with the following values
-// cab id
-// trajectory length
-// pt1 minutesOfWeek
-// pt1 occupied (boolean)
-// pt1 longitude
-// pt1 latitude
-// pt2 minutesOfWeek
-// pt2 occupied
-// pt2 longitude
-// pt2 latitude
-
-const CENTER = [-122.423175, 37.778316]
-const ZOOM = 14
-const BEARING = 0
-const PITCH = 15
+const DATA_PATH = 'data/sample.binary'
 
 const dlite = createDlite(MAPBOX_TOKEN, {
-  center: CENTER,
-  zoom: ZOOM,
-  bearing: BEARING,
-  pitch: PITCH
+  center: [-122.423175, 37.778316],
+  zoom: 14,
+  bearing: 0,
+  pitch: 15
 })
 
 const settings = {
@@ -46,16 +29,14 @@ fetch(DATA_PATH)
   .then(res => res.arrayBuffer())
   .then(data => {
     const trips = getTripsFromBinary(data).filter(t => t.occupied && Math.random() < settings.tripSampleRate)
-
     console.log(trips.slice(0, 10))
 
     const toggleLoop = createLoopToggle(render)
+    dlite.onload.then(toggleLoop)
 
     const gui = new GUI()
     gui.add(settings, 'tripsCount', 1, trips.length).step(1)
     gui.add(settings, 'radius', 1, 60)
-
-    dlite.onload.then(toggleLoop)
 
     const vertexArray = dlite.pico.createVertexArray()
     const positions = dlite.pico.createVertexBuffer(dlite.pico.gl.FLOAT, 2, getPositions(trips))
@@ -96,6 +77,17 @@ fetch(DATA_PATH)
     }
   })
 
+// Trip Binary data: 32FloatArray with the following values
+// cab id
+// trajectory length
+// pt1 minutesOfWeek
+// pt1 occupied (boolean)
+// pt1 longitude
+// pt1 latitude
+// pt2 minutesOfWeek
+// pt2 occupied
+// pt2 longitude
+// pt2 latitude
 function getTripsFromBinary (binaryData) {
   const floats = new Float32Array(binaryData)
   const trips = []

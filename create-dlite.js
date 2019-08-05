@@ -92,7 +92,7 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
       if (opt in layerOpts) throw new Error(`Option \`${opt}\` not implemented yet`)
     }
 
-    const splitAt = layerOpts.vs.startsWith('#version 300 es') ? layerOpts.vs.indexOf(RETURN) + 1 : 0
+    const splitAt = layerOpts.vs.startsWith('#version') ? layerOpts.vs.indexOf(RETURN) + 1 : 0
     const head = layerOpts.vs.slice(0, splitAt)
     const body = layerOpts.vs.slice(splitAt)
     const vs = head + PROJECTION_GLSL + body
