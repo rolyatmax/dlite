@@ -3,6 +3,7 @@
 const { GUI } = require('dat.gui')
 const createDlite = require('./create-dlite')
 const createLoopToggle = require('./helpers/create-loop')
+const { createSpring } = require('spring-animator')
 
 const MAPBOX_TOKEN = require('./mapbox-token')
 
@@ -19,8 +20,9 @@ const settings = {
   opacity: 1,
   tripsCount: 100000,
   radius: 5,
-  color: 'timeOfDay',
-  tripSampleRate: 1
+  height: 0,
+  stiffness: 0.03,
+  damping: 0.23
 }
 
 window.dlite = dlite
@@ -28,7 +30,7 @@ window.dlite = dlite
 fetch(DATA_PATH)
   .then(res => res.arrayBuffer())
   .then(data => {
-    const trips = getTripsFromBinary(data).filter(t => t.occupied && Math.random() < settings.tripSampleRate)
+    const trips = getTripsFromBinary(data).filter(t => t.occupied)
     console.log(trips.slice(0, 10))
 
     const toggleLoop = createLoopToggle(render)
@@ -37,42 +39,92 @@ fetch(DATA_PATH)
     const gui = new GUI()
     gui.add(settings, 'tripsCount', 1, trips.length).step(1)
     gui.add(settings, 'radius', 1, 60)
+    gui.add(settings, 'opacity', 0, 1).step(0.01)
+    gui.add(settings, 'height', 0, 100)
+    gui.add(settings, 'stiffness', 0.001, 0.1).step(0.001)
+    gui.add(settings, 'damping', 0.01, 0.5).step(0.01)
 
-    const vertexArray = dlite.pico.createVertexArray()
-    const positions = dlite.pico.createVertexBuffer(dlite.pico.gl.FLOAT, 2, getPositions(trips))
+    const heightSpring = createSpring(0.001, 0.03, 0)
+
+    const vertexArray = dlite.picoApp.createVertexArray()
+    const positions = dlite.picoApp.createVertexBuffer(dlite.PicoGL.FLOAT, 2, new Float32Array([-1, -1, -1, 1, 1, 1, 1, -1]))
+    const iPositions = dlite.picoApp.createVertexBuffer(dlite.PicoGL.FLOAT, 2, getPositions(trips))
+    const iHours = dlite.picoApp.createVertexBuffer(dlite.PicoGL.FLOAT, 1, getHours(trips))
     vertexArray.vertexAttributeBuffer(0, positions)
+    vertexArray.instanceAttributeBuffer(1, iPositions)
+    vertexArray.instanceAttributeBuffer(2, iHours)
 
     const renderPoints = dlite({
       vs: `#version 300 es
       precision highp float;
       layout(location=0) in vec2 position;
+      layout(location=1) in vec2 iPosition;
+      layout(location=2) in float iHour;
       uniform float size;
+      uniform float height;
+      out vec3 vColor;
+      out vec2 vUnitPosition;
+
+      #define BLUE vec3(44, 80, 156)
+      #define YELLOW vec3(244, 249, 199)
+
       void main() {
-        vec3 pos = vec3(position, 0.0);
-        vec3 offset = vec3(0.0);
+        float t;
+        if (iHour > 12.0) {
+          t = 1.0 - (iHour - 12.0) / 12.0;
+        } else {
+          t = iHour / 12.0;
+        }
+        
+        // position on the containing square in [-1, 1] space
+        vUnitPosition = position.xy;
+
+        vColor = mix(BLUE, YELLOW, t) / 255.0;
+
+        vec3 pos = vec3(iPosition, iHour * height);
+        vec3 offset = vec3(position, 0.0) * project_size(size);
         gl_Position = project_position_to_clipspace(pos, offset);
-        gl_PointSize = project_size(size);
       }`,
 
       fs: `#version 300 es
       precision highp float;
+      in vec3 vColor;
+      in vec2 vUnitPosition;
+      uniform float opacity;
       out vec4 fragColor;
       void main() {
-        fragColor = vec4(0.5, 0.7, 0.9, 1.0);
+        float dist = length(vUnitPosition);
+        float aaAlpha = 1.0 - smoothstep(0.999, 1.001, dist);
+        if (dist > 1.0) {
+          discard;
+        }
+        fragColor = vec4(vColor, opacity * aaAlpha);
       }`,
 
       vertexArray: vertexArray,
-      primitive: dlite.pico.gl.POINTS,
-      count: settings.tripsCount,
-      uniforms: { size: settings.radius }
+      blend: {
+        csrc: dlite.PicoGL.SRC_ALPHA,
+        cdest: dlite.PicoGL.ONE_MINUS_SRC_ALPHA,
+        asrc: dlite.PicoGL.ONE,
+        adest: dlite.PicoGL.ONE
+      }
     })
 
     function render (t) {
+      heightSpring.setDestination(settings.height)
+      heightSpring.tick(settings.stiffness, settings.damping)
+      const height = heightSpring.getCurrentValue()
+
       dlite.clear(0, 0, 0, 0)
       renderPoints({
-        count: settings.tripsCount,
-        primitive: dlite.pico.gl.POINTS,
-        uniforms: { size: settings.radius }
+        count: 4,
+        instanceCount: settings.tripsCount,
+        primitive: dlite.PicoGL.TRIANGLE_FAN,
+        uniforms: {
+          height: height,
+          size: settings.radius,
+          opacity: settings.opacity
+        }
       })
     }
   })
@@ -123,4 +175,14 @@ function getPositions (trips) {
     positionsData[i++] = trip.path[0][1]
   }
   return positionsData
+}
+
+function getHours (trips) {
+  const hoursData = new Float32Array(trips.length)
+  let i = 0
+  while (i < trips.length) {
+    hoursData[i] = trips[i].minutesOfDay / 60
+    i += 1
+  }
+  return hoursData
 }

@@ -1,4 +1,4 @@
-// const { PicoGL } = require('./node_modules/picogl/src/picogl')
+// const { PicoGL } = require('./node_modules/picogl/src/picogl') // if you turn this on, you need to add -p esmify to the run cmd
 const PicoGL = require('picogl')
 const fit = require('canvas-fit')
 const mapboxgl = require('mapbox-gl')
@@ -52,11 +52,11 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
   dliteCanvas.style['pointer-events'] = 'none' // let the user interact with the mapbox map below
   const resizeCanvas = fit(dliteCanvas, container)
 
-  const pico = PicoGL.createApp(dliteCanvas)
+  const picoApp = PicoGL.createApp(dliteCanvas)
 
   function resize () {
     resizeCanvas()
-    pico.viewport(0, 0, dliteCanvas.width, dliteCanvas.height)
+    picoApp.viewport(0, 0, dliteCanvas.width, dliteCanvas.height)
   }
 
   // TODO: provide a teardown function?
@@ -85,36 +85,65 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
     })
   }
 
-  // { vs, fs, uniforms, vertexArray, primitive, count, instanceCount?, framebuffer, parameters }
+  // { vs, fs, uniforms, vertexArray, primitive, count, instanceCount, framebuffer, parameters }
   function dlite (layerOpts) {
-    const NOT_SUPPORTED_YET = ['instanceCount', 'parameters', 'framebuffer']
+    const NOT_SUPPORTED_YET = ['parameters', 'transform']
     for (const opt of NOT_SUPPORTED_YET) {
       if (opt in layerOpts) throw new Error(`Option \`${opt}\` not implemented yet`)
     }
 
-    const splitAt = layerOpts.vs.startsWith('#version') ? layerOpts.vs.indexOf(RETURN) + 1 : 0
+    const splitAt = layerOpts.vs.startsWith('#version 300 es') ? layerOpts.vs.indexOf(RETURN) + 1 : 0
     const head = layerOpts.vs.slice(0, splitAt)
     const body = layerOpts.vs.slice(splitAt)
     const vs = head + PROJECTION_GLSL + body
     const fs = layerOpts.fs
-    const program = pico.createProgram(vs, fs)
-    const drawCall = pico.createDrawCall(program, layerOpts.vertexArray)
-
-    if ('primitive' in layerOpts) drawCall.primitive(layerOpts.primitive)
-    if ('uniforms' in layerOpts) {
-      // TODO: make this work for texture uniforms and uniform blocks
-      for (const name in layerOpts.uniforms) {
-        drawCall.uniform(name, layerOpts.uniforms[name])
-      }
-    }
+    const program = picoApp.createProgram(vs, fs)
+    let drawCall = picoApp.createDrawCall(program, layerOpts.vertexArray)
 
     // can pass in any updates to draw call EXCEPT vs and fs changes:
-    // { uniforms, vertexArray, primitive, count, instanceCount?, framebuffer, parameters }
+    // { uniforms, vertexArray, primitive, count, instanceCount, framebuffer, blend, depth, rasterize, cullBackfaces, parameters }
     return function render (renderOpts) {
-      const NOT_SUPPORTED_YET = ['vertexArray', 'instanceCount', 'parameters', 'framebuffer']
+      const NOT_SUPPORTED_YET = ['parameters', 'transform']
       for (const opt of NOT_SUPPORTED_YET) {
         if (opt in renderOpts) throw new Error(`Updating option \`${opt}\` in render() call is not implemented yet`)
       }
+
+      // TODO: see if vertexArray has changed since last frame?? maybe end up owning vertexArray and attribute creation?
+      if ('vertexArray' in renderOpts) {
+        drawCall = picoApp.createDrawCall(program, renderOpts.vertexArray)
+      }
+
+      const blend = 'blend' in renderOpts ? renderOpts.blend : 'blend' in layerOpts ? layerOpts.blend : null
+      if (blend !== null) {
+        if (blend === false) {
+          picoApp.noBlend()
+        } else {
+          picoApp.blend()
+          picoApp.blendFuncSeparate(blend.csrc, blend.cdest, blend.asrc, blend.adest)
+        }
+      }
+
+      const depth = 'depth' in renderOpts ? renderOpts.depth : 'depth' in layerOpts ? layerOpts.depth : null
+      if (depth !== null) {
+        if (depth === true) picoApp.depthTest()
+        else picoApp.noDepthTest()
+      }
+
+      const rasterize = 'rasterize' in renderOpts ? renderOpts.rasterize : 'rasterize' in layerOpts ? layerOpts.rasterize : null
+      if (rasterize !== null) {
+        if (rasterize === true) picoApp.rasterize()
+        else picoApp.noRasterize()
+      }
+
+      const cullBackfaces = 'cullBackfaces' in renderOpts ? renderOpts.cullBackfaces : 'cullBackfaces' in layerOpts ? layerOpts.cullBackfaces : null
+      if (cullBackfaces !== null) {
+        if (cullBackfaces === true) picoApp.cullBackfaces()
+        else picoApp.drawBackfaces()
+      }
+
+      const framebuffer = 'framebuffer' in renderOpts ? renderOpts.framebuffer : 'framebuffer' in layerOpts ? layerOpts.framebuffer : null
+      if (framebuffer === null) picoApp.defaultDrawFramebuffer()
+      else picoApp.drawFramebuffer(framebuffer)
 
       // TODO: if new vertexArray, create a new drawCall?
 
@@ -131,8 +160,15 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
         drawCall.uniform(name, uniforms[name])
       }
 
-      if ('primitive' in renderOpts) drawCall.primitive(renderOpts.primitive)
-      if ('count' in renderOpts) drawCall.drawRanges([0, renderOpts.count])
+      const primitive = 'primitive' in renderOpts ? renderOpts.primitive : 'primitive' in layerOpts ? layerOpts.primitive : null
+      if (primitive !== null) drawCall.primitive(primitive)
+      const count = 'count' in renderOpts ? renderOpts.count : 'count' in layerOpts ? layerOpts.count : null
+      const instanceCount = 'instanceCount' in renderOpts ? renderOpts.instanceCount : 'instanceCount' in layerOpts ? layerOpts.instanceCount : null
+      if (count !== null && instanceCount !== null) {
+        drawCall.drawRanges([0, count, instanceCount])
+      } else if (count !== null) {
+        drawCall.drawRanges([0, count])
+      }
 
       drawCall.draw()
     }
@@ -140,10 +176,11 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
 
   dlite.mapbox = mapbox
   dlite.onload = onload
-  dlite.pico = pico // ??? merge pico fns with the dlite object?
+  dlite.picoApp = picoApp // ??? merge pico fns with the dlite object?
+  dlite.PicoGL = PicoGL
   dlite.clear = function clear (...color) {
-    pico.clearColor(...color)
-    pico.clear()
+    picoApp.clearColor(...color)
+    picoApp.clear()
   }
   // todo: include project / unproject functions from mercator projection
   // dlite.project

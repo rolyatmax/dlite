@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "start": "budo demo.js --live --open -- -p esmify"
+    "start": "budo demo.js --live --open"
   },
   "eslintConfig": {
     "extends": [
@@ -10,6 +10,7 @@
   "dependencies": {
     "budo": "^11.6.2",
     "canvas-fit": "^1.5.0",
+    "d3": "^5.9.7",
     "dat.gui": "^0.7.6",
     "eslint": "^6.1.0",
     "esmify": "^2.1.1",
@@ -18,6 +19,7 @@
     "gl-vec4": "^1.0.1",
     "mapbox-gl": "^1.2.0",
     "picogl": "^0.14.0",
+    "spring-animator": "^2.0.0",
     "standard": "^13.1.0",
     "viewport-mercator-project": "^6.1.1"
   }
