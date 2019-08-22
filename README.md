@@ -182,11 +182,11 @@ gl_Position = project_position_to_clipspace(position, offset);
  - [ ] make camera uniforms a uniform block?
  - [ ] support transform feedback
  - [ ] try rendering to framebuffer
- - [ ] show example API in README
  - [ ] make mapbox optional (show no map)
  - [ ] return project/unproject fns
  - [ ] create/manage vertexArrayObject/attributes for user?
  - [ ] experiment with exporting layers
+ - [x] show example API in README
  - [x] ship a smaller dataset with the demo
  - [x] incorporate animation in demo
  - [x] implement vertexArray updates on render()
