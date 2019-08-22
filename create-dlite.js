@@ -246,6 +246,11 @@ vec4 project_position_to_clipspace(vec3 position, vec3 offset) {
   return project_uViewProjectionMatrix * commonPosition + project_uCenter;
 }
 
+vec4 project_position_to_clipspace(vec3 position) {
+  vec3 offset = vec3(0);
+  return project_position_to_clipspace(position, offset);
+}
+
 `
 
 // --------------------------------------------------------------------------------------------------
