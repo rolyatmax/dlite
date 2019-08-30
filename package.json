@@ -1,4 +1,7 @@
 {
+  "name": "dlite",
+  "version": "0.0.4",
+  "description": "a tiny framework for mapbox-based data vis using PicoGL",
   "scripts": {
     "start": "budo demo.js --live --open"
   },

@@ -1,3 +1,4 @@
+const VERSION = '0.0.4'
 // const { PicoGL } = require('./node_modules/picogl/src/picogl') // if you turn this on, you need to add -p esmify to the run cmd
 const PicoGL = require('picogl')
 const fit = require('canvas-fit')
@@ -17,7 +18,7 @@ const {
 const RETURN = `
 `
 
-module.exports = function createDlite (mapboxToken, initialViewState, mapStyle = 'dark', container = window) {
+module.exports = function createDlite (mapboxToken, initialViewState, mapStyle = 'mapbox://styles/mapbox/dark-v9', container = window) {
   mapboxgl.accessToken = mapboxToken
 
   const { center, zoom, bearing, pitch } = initialViewState
@@ -35,7 +36,7 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
 
   const mapbox = new mapboxgl.Map({
     container: mapContainer,
-    style: `mapbox://styles/mapbox/${mapStyle}-v9`,
+    style: mapStyle,
     center: center,
     zoom: zoom,
     bearing: bearing,
@@ -87,30 +88,49 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
 
   // { vs, fs, uniforms, vertexArray, primitive, count, instanceCount, framebuffer, parameters }
   function dlite (layerOpts) {
-    const NOT_SUPPORTED_YET = ['parameters', 'transform']
-    for (const opt of NOT_SUPPORTED_YET) {
-      if (opt in layerOpts) throw new Error(`Option \`${opt}\` not implemented yet`)
-    }
-
     const splitAt = layerOpts.vs.startsWith('#version 300 es') ? layerOpts.vs.indexOf(RETURN) + 1 : 0
     const head = layerOpts.vs.slice(0, splitAt)
     const body = layerOpts.vs.slice(splitAt)
     const vs = head + PROJECTION_GLSL + body
-    const fs = layerOpts.fs
-    const program = picoApp.createProgram(vs, fs)
+    const fs = layerOpts.fs || DEFAULT_FRAGMENT_SHADER
+
+    let transformFeedback = null
+    let transformFeedbackVaryings = null
+    let curProgramTransformFeedbackVaryings = null
+    if (layerOpts.transform) {
+      transformFeedbackVaryings = Object.keys(layerOpts.transform).sort()
+      curProgramTransformFeedbackVaryings = transformFeedbackVaryings.slice()
+      transformFeedback = picoApp.createTransformFeedback()
+      for (let i = 0; i < transformFeedbackVaryings.length; i++) {
+        const varying = transformFeedbackVaryings[i]
+        transformFeedback.feedbackBuffer(i, layerOpts.transform[varying])
+      }
+    }
+
+    const program = picoApp.createProgram(vs, fs, transformFeedbackVaryings)
     let drawCall = picoApp.createDrawCall(program, layerOpts.vertexArray)
 
     // can pass in any updates to draw call EXCEPT vs and fs changes:
     // { uniforms, vertexArray, primitive, count, instanceCount, framebuffer, blend, depth, rasterize, cullBackfaces, parameters }
     return function render (renderOpts) {
-      const NOT_SUPPORTED_YET = ['parameters', 'transform']
-      for (const opt of NOT_SUPPORTED_YET) {
-        if (opt in renderOpts) throw new Error(`Updating option \`${opt}\` in render() call is not implemented yet`)
+      // the varyings just for this call
+      let renderTransformVaryings = transformFeedbackVaryings
+      if ('transform' in renderOpts) {
+        transformFeedback = transformFeedback || picoApp.createTransformFeedback()
+        renderTransformVaryings = Object.keys(renderOpts.transform).sort()
+        // TODO: should we be updating these on every frame like this?
+        for (let i = 0; i < renderTransformVaryings.length; i++) {
+          const varying = renderTransformVaryings[i]
+          transformFeedback.feedbackBuffer(i, renderOpts.transform[varying])
+        }
       }
 
       // TODO: see if vertexArray has changed since last frame?? maybe end up owning vertexArray and attribute creation?
-      if ('vertexArray' in renderOpts) {
-        drawCall = picoApp.createDrawCall(program, renderOpts.vertexArray)
+      // TODO: should we write over the drawCall like this or have this just persist through the end of this frame's render?
+      const hasNewVaryings = !isEqualVaryings(curProgramTransformFeedbackVaryings, renderTransformVaryings)
+      if ('vertexArray' in renderOpts || hasNewVaryings) {
+        drawCall = picoApp.createDrawCall(program, renderOpts.vertexArray, renderTransformVaryings)
+        curProgramTransformFeedbackVaryings = renderTransformVaryings
       }
 
       const blend = 'blend' in renderOpts ? renderOpts.blend : 'blend' in layerOpts ? layerOpts.blend : null
@@ -170,13 +190,21 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
         drawCall.drawRanges([0, count])
       }
 
+      // if you've passed `null` for transform feedback, then use that instead of the stored transformFeedback
+      const tf = ('transform' in renderOpts && !renderOpts.transform) ? null : transformFeedback
+      drawCall.transformFeedback(tf)
+
       drawCall.draw()
     }
   }
 
+  dlite.VERSION = VERSION
   dlite.mapbox = mapbox
   dlite.onload = onload
-  dlite.picoApp = picoApp // ??? merge pico fns with the dlite object?
+  dlite.picoApp = picoApp
+  dlite.gl = picoApp.gl
+  dlite.createVertexArray = picoApp.createVertexArray.bind(picoApp) // ??? merge other pico fns with the dlite object?
+  dlite.createVertexBuffer = picoApp.createVertexBuffer.bind(picoApp) // ??? merge other pico fns with the dlite object?
   dlite.PicoGL = PicoGL
   dlite.clear = function clear (...color) {
     picoApp.clearColor(...color)
@@ -186,6 +214,19 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
   // dlite.project
   // dlite.unproject
   return dlite
+}
+
+// also accepts null values
+function isEqualVaryings (arr1, arr2) {
+  if (arr1 === null && arr2 === null) return true
+  if (arr1 === null || arr2 === null) return false
+  if (arr1.length !== arr2.length) return false
+  let j = 0
+  while (j < arr1.length) {
+    if (arr1[j] !== arr2[j]) return false
+    j += 1
+  }
+  return true
 }
 
 const PROJECTION_GLSL = `\
@@ -252,6 +293,13 @@ vec4 project_position_to_clipspace(vec3 position) {
 }
 
 `
+
+const DEFAULT_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(0);
+}`
 
 // --------------------------------------------------------------------------------------------------
 

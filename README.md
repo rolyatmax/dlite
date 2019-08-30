@@ -95,24 +95,25 @@ Takes render `options` which are used to generate a render function. The render 
 ```js
 {
   vs: vertexShaderSource, // the source of the vertex shader (string)
-  fs: fragmentShaderSource, // the source of the fragment shader (string)
+  fs: fragmentShaderSource, // the source of the fragment shader (string) (optional for transform feedback pass)
   vertexArray: vertexArray, // a PicoGL vertexArray object - dlite.picoApp.createVertexArray()
+  transform: { // an object containing a mapping of varyings to output buffers (optional)
+    varyingName1: vertexBuffer1,
+  },
   uniforms: uniformsObject, // a JavaScript object with uniforms (optional)
   count: vertexCount, // the number of attribute vertices to draw (optional)
   instanceCount: instanceCount, // the number of instances to draw (optional)
   primitive: glDrawPrimitive, // the GL draw primitive, default is GL.TRIANGLES (optional)
-  blend: blendParams, // false or an object of blend params ({csrc, cdest, asrc, adest}) (optional)
-  // blendParams example:
-  // {
-  //   csrc: GL.SRC_ALPHA,
-  //   cdest: GL.ONE_MINUS_SRC_ALPHA,
-  //   asrc: GL.ONE,
-  //   adest: GL.ONE
-  // }
   framebuffer: framebuffer, // a PicoGL framebuffer or null to draw to the default framebuffer (optional)
   depth: true, // a boolean to turn depth testing off/on (optional)
   rasterize: true, // a boolean to turn rasterization off/on (optional)
-  cullbackfaces: true // a boolean to turn backface-culling off/on (optional)
+  cullbackfaces: true, // a boolean to turn backface-culling off/on (optional)
+  blend: { // an object of blend params or `false` (optional)
+    csrc: GL.SRC_ALPHA,
+    cdest: GL.ONE_MINUS_SRC_ALPHA,
+    asrc: GL.ONE,
+    adest: GL.ONE
+  }
 }
 ```
 
@@ -178,14 +179,16 @@ gl_Position = project_position_to_clipspace(position, offset);
 
 ### To do
  - [ ] consider using deck's map controller instead of mapbox because mapbox has such a lag it causes the two canvas to go out of sync
- - [ ] figure out where `altitude` comes from in web-mercator-projection stuff
+ - [ ] figure out where `altitude` comes from in web-mercator-projection stuff (from Tarek: it's always 1.5x the screenheight?)
  - [ ] make camera uniforms a uniform block?
- - [ ] support transform feedback
  - [ ] try rendering to framebuffer
  - [ ] make mapbox optional (show no map)
  - [ ] return project/unproject fns
  - [ ] create/manage vertexArrayObject/attributes for user?
  - [ ] experiment with exporting layers
+ - [ ] create defaults to run on every call to make sure draw call state doesn't bleed into each other
+ - [X] create default fragment shader for transform feedback
+ - [x] support transform feedback
  - [x] show example API in README
  - [x] ship a smaller dataset with the demo
  - [x] incorporate animation in demo
