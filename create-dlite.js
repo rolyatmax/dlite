@@ -94,6 +94,8 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
     const vs = head + PROJECTION_GLSL + body
     const fs = layerOpts.fs || DEFAULT_FRAGMENT_SHADER
 
+    let timer = null
+
     let transformFeedback = null
     let transformFeedbackVaryings = null
     let curProgramTransformFeedbackVaryings = null
@@ -115,6 +117,17 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
     // can pass in any updates to draw call EXCEPT vs and fs changes:
     // { uniforms, vertexArray, primitive, count, instanceCount, framebuffer, blend, depth, rasterize, cullBackfaces, parameters }
     return function render (renderOpts) {
+      let lastTiming = null
+      const useTimer = 'timer' in renderOpts ? renderOpts.timer : 'timer' in layerOpts ? layerOpts.timer : false
+      if (useTimer) {
+        timer = timer || dlite.picoApp.createTimer()
+        if (timer.ready()) {
+          const { gpuTime, cpuTime } = timer
+          lastTiming = { gpuTime, cpuTime }
+        }
+        timer.start()
+      }
+
       // the varyings just for this call
       let renderTransformVaryings = transformFeedbackVaryings
       if ('transform' in renderOpts) {
@@ -199,6 +212,12 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
       drawCall.transformFeedback(tf)
 
       drawCall.draw()
+
+      if (useTimer) {
+        timer.end()
+      }
+
+      return lastTiming
     }
   }
 
