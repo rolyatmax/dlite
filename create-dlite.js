@@ -1,4 +1,4 @@
-const VERSION = '0.0.4'
+const VERSION = '0.0.5'
 // const { PicoGL } = require('./node_modules/picogl/src/picogl') // if you turn this on, you need to add -p esmify to the run cmd
 const PicoGL = require('picogl')
 const fit = require('canvas-fit')
@@ -110,6 +110,8 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
     const program = picoApp.createProgram(vs, fs, transformFeedbackVaryings)
     let drawCall = picoApp.createDrawCall(program, layerOpts.vertexArray)
 
+    const cameraProjectionUniformBuffer = picoApp.createUniformBuffer(cameraUniformTypesByPosition)
+
     // can pass in any updates to draw call EXCEPT vs and fs changes:
     // { uniforms, vertexArray, primitive, count, instanceCount, framebuffer, blend, depth, rasterize, cullBackfaces, parameters }
     return function render (renderOpts) {
@@ -165,16 +167,18 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
       if (framebuffer === null) picoApp.defaultDrawFramebuffer()
       else picoApp.drawFramebuffer(framebuffer)
 
-      // TODO: if new vertexArray, create a new drawCall?
-
-      // TODO: update cameraUniforms in a uniform block?
       const cameraUniforms = getCameraUniforms()
+      for (let i = 0; i < cameraUniformsByPosition.length; i++) {
+        const cameraUniformName = cameraUniformsByPosition[i]
+        cameraProjectionUniformBuffer.set(i, cameraUniforms[cameraUniformName])
+      }
+      cameraProjectionUniformBuffer.update()
+      drawCall.uniformBlock('DliteCameraProjectionUniforms', cameraProjectionUniformBuffer)
+
       const uniforms = {
-        ...cameraUniforms,
         ...(('uniforms' in layerOpts) ? layerOpts.uniforms : {}),
         ...(('uniforms' in renderOpts) ? renderOpts.uniforms : {})
       }
-
       // TODO: make this work for texture uniforms and uniform blocks
       for (const name in uniforms) {
         drawCall.uniform(name, uniforms[name])
@@ -229,18 +233,49 @@ function isEqualVaryings (arr1, arr2) {
   return true
 }
 
+// this must match the order expected in the GLSL
+const cameraUniformsByPosition = [
+  'project_uModelMatrix',
+  'project_uViewProjectionMatrix',
+  'project_uCenter',
+  'project_uCommonUnitsPerMeter', // TODO: make float (only z is used)
+  'project_uCoordinateOrigin', // TODO: make vec2 (only xy is used)
+  'project_uCommonUnitsPerWorldUnit',
+  'project_uCommonUnitsPerWorldUnit2',
+  'project_uCoordinateSystem', // TODO: make boolean (only values are 1 or 4)
+  'project_uScale',
+  'project_uAntimeridian',
+  'project_uWrapLongitude'
+]
+// this must match the order expected in the GLSL
+const cameraUniformTypesByPosition = [
+  PicoGL.FLOAT_MAT4,
+  PicoGL.FLOAT_MAT4,
+  PicoGL.FLOAT_VEC4,
+  PicoGL.FLOAT_VEC4, // vec3 but passed as vec4 to keep proper std140 buffer alignment
+  PicoGL.FLOAT_VEC4, // vec3 but passed as vec4 to keep proper std140 buffer alignment
+  PicoGL.FLOAT_VEC4, // vec3 but passed as vec4 to keep proper std140 buffer alignment
+  PicoGL.FLOAT_VEC4, // vec3 but passed as vec4 to keep proper std140 buffer alignment
+  PicoGL.FLOAT,
+  PicoGL.FLOAT,
+  PicoGL.FLOAT,
+  PicoGL.BOOL
+]
+
 const PROJECTION_GLSL = `\
-uniform mat4 project_uModelMatrix;
-uniform mat4 project_uViewProjectionMatrix;
-uniform vec4 project_uCenter;
-uniform vec3 project_uCommonUnitsPerMeter;
-uniform vec3 project_uCoordinateOrigin;
-uniform vec3 project_uCommonUnitsPerWorldUnit;
-uniform vec3 project_uCommonUnitsPerWorldUnit2;
-uniform float project_uCoordinateSystem;
-uniform float project_uScale;
-uniform float project_uAntimeridian;
-uniform bool project_uWrapLongitude;
+layout(std140) uniform DliteCameraProjectionUniforms {
+  mat4 project_uModelMatrix;
+  mat4 project_uViewProjectionMatrix;
+  vec4 project_uCenter;
+  vec4 project_uCommonUnitsPerMeter; // vec3 but passed as vec4 to keep proper std140 buffer alignment
+  vec4 project_uCoordinateOrigin; // vec3 but passed as vec4 to keep proper std140 buffer alignment
+  vec4 project_uCommonUnitsPerWorldUnit; // vec3 but passed as vec4 to keep proper std140 buffer alignment
+  vec4 project_uCommonUnitsPerWorldUnit2; // vec3 but passed as vec4 to keep proper std140 buffer alignment
+  float project_uCoordinateSystem;
+  float project_uScale;
+  float project_uAntimeridian;
+  bool project_uWrapLongitude;
+};
 
 const float COORDINATE_SYSTEM_LNG_LAT = 1.;
 const float COORDINATE_SYSTEM_LNGLAT_AUTO_OFFSET = 4.;
@@ -264,7 +299,7 @@ vec2 project_mercator_(vec2 lnglat) {
 
 vec4 project_offset_(vec4 offset) {
   float dy = clamp(offset.y, -1., 1.);
-  vec3 commonUnitsPerWorldUnit = project_uCommonUnitsPerWorldUnit + project_uCommonUnitsPerWorldUnit2 * dy;
+  vec3 commonUnitsPerWorldUnit = project_uCommonUnitsPerWorldUnit.xyz + project_uCommonUnitsPerWorldUnit2.xyz * dy;
   return vec4(offset.xyz * commonUnitsPerWorldUnit, offset.w);
 }
 
