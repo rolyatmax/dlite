@@ -70,19 +70,13 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
     const pitch = mapbox.getPitch()
 
     return getUniformsFromViewport({
-      viewState: {
-        width: dliteCanvas.width,
-        height: dliteCanvas.height,
-        longitude: lng,
-        latitude: lat,
-        bearing: bearing,
-        pitch: pitch,
-        zoom: zoom
-        // nearZMultiplier = 0.1,
-        // farZMultiplier = 10
-      }
-      // coordinateOrigin = DEFAULT_COORDINATE_ORIGIN,
-      // wrapLongitude = false
+      width: dliteCanvas.width,
+      height: dliteCanvas.height,
+      longitude: lng,
+      latitude: lat,
+      bearing: bearing,
+      pitch: pitch,
+      zoom: zoom
     })
   }
 
@@ -133,7 +127,6 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
       if ('transform' in renderOpts) {
         transformFeedback = transformFeedback || picoApp.createTransformFeedback()
         renderTransformVaryings = Object.keys(renderOpts.transform).sort()
-        // TODO: should we be updating these on every frame like this?
         for (let i = 0; i < renderTransformVaryings.length; i++) {
           const varying = renderTransformVaryings[i]
           transformFeedback.feedbackBuffer(i, renderOpts.transform[varying])
@@ -257,14 +250,12 @@ const cameraUniformsByPosition = [
   'project_uModelMatrix',
   'project_uViewProjectionMatrix',
   'project_uCenter',
-  'project_uCommonUnitsPerMeter', // TODO: make float (only z is used)
-  'project_uCoordinateOrigin', // TODO: make vec2 (only xy is used)
+  'project_uCommonUnitsPerMeter', // NOTE: currently only z is used
   'project_uCommonUnitsPerWorldUnit',
   'project_uCommonUnitsPerWorldUnit2',
-  'project_uCoordinateSystem', // TODO: make boolean (only values are 1 or 4)
+  'project_uCoordinateOrigin',
   'project_uScale',
-  'project_uAntimeridian',
-  'project_uWrapLongitude'
+  'project_uLngLatAutoOffset'
 ]
 // this must match the order expected in the GLSL
 const cameraUniformTypesByPosition = [
@@ -274,9 +265,7 @@ const cameraUniformTypesByPosition = [
   PicoGL.FLOAT_VEC4, // vec3 but passed as vec4 to keep proper std140 buffer alignment
   PicoGL.FLOAT_VEC4, // vec3 but passed as vec4 to keep proper std140 buffer alignment
   PicoGL.FLOAT_VEC4, // vec3 but passed as vec4 to keep proper std140 buffer alignment
-  PicoGL.FLOAT_VEC4, // vec3 but passed as vec4 to keep proper std140 buffer alignment
-  PicoGL.FLOAT,
-  PicoGL.FLOAT,
+  PicoGL.FLOAT_VEC2,
   PicoGL.FLOAT,
   PicoGL.BOOL
 ]
@@ -287,17 +276,13 @@ layout(std140) uniform DliteCameraProjectionUniforms {
   mat4 project_uViewProjectionMatrix;
   vec4 project_uCenter;
   vec4 project_uCommonUnitsPerMeter; // vec3 but passed as vec4 to keep proper std140 buffer alignment
-  vec4 project_uCoordinateOrigin; // vec3 but passed as vec4 to keep proper std140 buffer alignment
   vec4 project_uCommonUnitsPerWorldUnit; // vec3 but passed as vec4 to keep proper std140 buffer alignment
   vec4 project_uCommonUnitsPerWorldUnit2; // vec3 but passed as vec4 to keep proper std140 buffer alignment
-  float project_uCoordinateSystem;
+  vec2 project_uCoordinateOrigin;
   float project_uScale;
-  float project_uAntimeridian;
-  bool project_uWrapLongitude;
+  bool project_uLngLatAutoOffset;
 };
 
-const float COORDINATE_SYSTEM_LNG_LAT = 1.;
-const float COORDINATE_SYSTEM_LNGLAT_AUTO_OFFSET = 4.;
 const float TILE_SIZE = 512.0;
 const float PI = 3.1415926536;
 const float WORLD_SCALE = TILE_SIZE / (PI * 2.0);
@@ -307,12 +292,8 @@ float project_size(float meters) {
 }
 
 vec2 project_mercator_(vec2 lnglat) {
-  float x = lnglat.x;
-  if (project_uWrapLongitude) {
-    x = mod(x - project_uAntimeridian, 360.0) + project_uAntimeridian;
-  }
   return vec2(
-    radians(x) + PI, PI - log(tan(PI * 0.25 + radians(lnglat.y) * 0.5))
+    radians(lnglat.x) + PI, PI - log(tan(PI * 0.25 + radians(lnglat.y) * 0.5))
   );
 }
 
@@ -323,16 +304,13 @@ vec4 project_offset_(vec4 offset) {
 }
 
 vec4 project_position(vec4 position) {
-  if (project_uCoordinateSystem == COORDINATE_SYSTEM_LNG_LAT) {
-    return project_uModelMatrix * vec4(
-      project_mercator_(position.xy) * WORLD_SCALE * project_uScale, project_size(position.z), position.w
-    );
+  if (project_uLngLatAutoOffset) {
+    vec2 xy = position.xy - project_uCoordinateOrigin.xy;
+    return project_offset_(vec4(xy, position.zw));
   }
-  if (project_uCoordinateSystem == COORDINATE_SYSTEM_LNGLAT_AUTO_OFFSET) {
-    float X = position.x - project_uCoordinateOrigin.x;
-    float Y = position.y - project_uCoordinateOrigin.y;
-    return project_offset_(vec4(X, Y, position.z, position.w));
-  }
+  return project_uModelMatrix * vec4(
+    project_mercator_(position.xy) * WORLD_SCALE * project_uScale, project_size(position.z), position.w
+  );
 }
 
 vec4 project_position_to_clipspace(vec3 position, vec3 offset) {
@@ -362,15 +340,10 @@ const ZERO_VECTOR = [0, 0, 0, 0]
 // 4x4 matrix that drops 4th component of vector
 const VECTOR_TO_POINT_MATRIX = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
 const IDENTITY_MATRIX = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
-const DEFAULT_COORDINATE_ORIGIN = [0, 0, 0]
+const DEFAULT_COORDINATE_ORIGIN = [0, 0]
 
 // Based on viewport-mercator-project/test/fp32-limits.js
 const LNGLAT_AUTO_OFFSET_ZOOM_THRESHOLD = 12
-
-const COORD_SYSTEM = {
-  LNG_LAT: 1,
-  LNGLAT_AUTO_OFFSET: 4
-}
 
 /**
  * Projects xyz (possibly latitude and longitude) to pixel coordinates in window
@@ -428,32 +401,25 @@ function unproject (xyz, { width, height, latitude, longitude, scale, pitch, bea
   return Number.isFinite(targetZ) ? [X, Y, targetZ] : [X, Y]
 }
 
-function getUniformsFromViewport ({
-  viewState,
-  coordinateOrigin = DEFAULT_COORDINATE_ORIGIN,
-  wrapLongitude = false
-}) {
+function getUniformsFromViewport (viewState) {
   const modelMatrix = IDENTITY_MATRIX
   // might need nearZMultiplier & farZMultiplier to be customizable to match mapbox projection matrix?
-  const { bearing, height, latitude, longitude, pitch, width, zoom, nearZMultiplier = 0.1, farZMultiplier = 10 } = viewState
+  const { bearing, height, latitude, longitude, pitch, width, zoom } = viewState
   const scale = Math.pow(2, zoom)
-  const altitude = Math.max(0.75, viewState.altitude || 1.5)
+  const altitude = 1.5
+  const nearZMultiplier = 0.1
+  const farZMultiplier = 10
 
   const projectionMatrix = getProjectionMatrix({ width, height, pitch, altitude, nearZMultiplier, farZMultiplier })
   const viewMatrix = getCenteredViewMatrix({ height, pitch, bearing, altitude, scale, longitude, latitude })
 
   let viewProjectionMatrix = mat4.multiply([], projectionMatrix, viewMatrix)
-  let projectionCenter, shaderCoordinateSystem, shaderCoordinateOrigin
+  let projectionCenter = ZERO_VECTOR
+  let shaderCoordinateOrigin = DEFAULT_COORDINATE_ORIGIN
 
-  if (zoom < LNGLAT_AUTO_OFFSET_ZOOM_THRESHOLD) {
-    // Use LNG_LAT projection if zoomed out
-    shaderCoordinateSystem = COORD_SYSTEM.LNG_LAT
-    shaderCoordinateOrigin = coordinateOrigin
-    shaderCoordinateOrigin[2] = shaderCoordinateOrigin[2] || 0
-    projectionCenter = ZERO_VECTOR
-  } else {
-    shaderCoordinateSystem = COORD_SYSTEM.LNGLAT_AUTO_OFFSET
-    shaderCoordinateOrigin = [Math.fround(longitude), Math.fround(latitude), 0]
+  const useLngLatAutoOffset = zoom >= LNGLAT_AUTO_OFFSET_ZOOM_THRESHOLD
+  if (useLngLatAutoOffset) {
+    shaderCoordinateOrigin = [Math.fround(longitude), Math.fround(latitude)]
 
     const positionCommonSpace = projectPosition(shaderCoordinateOrigin, { latitude, longitude, scale })
     positionCommonSpace[3] = 1
@@ -475,16 +441,14 @@ function getUniformsFromViewport ({
 
   return {
     project_uModelMatrix: modelMatrix,
-    project_uCoordinateSystem: shaderCoordinateSystem,
+    project_uLngLatAutoOffset: useLngLatAutoOffset,
     project_uCenter: projectionCenter,
-    project_uWrapLongitude: wrapLongitude,
-    project_uAntimeridian: (longitude || 0) - 180,
     project_uCommonUnitsPerMeter: distanceScales.pixelsPerMeter,
     project_uCommonUnitsPerWorldUnit: distanceScalesAtOrigin.pixelsPerDegree,
     project_uCommonUnitsPerWorldUnit2: distanceScalesAtOrigin.pixelsPerDegree2,
     project_uScale: scale, // This is the mercator scale (2 ** zoom)
     project_uViewProjectionMatrix: viewProjectionMatrix,
-    project_uCoordinateOrigin: shaderCoordinateSystem === COORD_SYSTEM.LNGLAT_AUTO_OFFSET ? shaderCoordinateOrigin : DEFAULT_COORDINATE_ORIGIN
+    project_uCoordinateOrigin: shaderCoordinateOrigin
   }
 }
 
