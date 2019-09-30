@@ -1,30 +1,22 @@
-const VERSION = '0.0.5'
+const VERSION = '0.0.7'
 // const { PicoGL } = require('./node_modules/picogl/src/picogl') // if you turn this on, you need to add -p esmify to the run cmd
 const PicoGL = require('picogl')
+const PicoMercator = require('pico-mercator')
 const fit = require('canvas-fit')
 const mapboxgl = require('mapbox-gl')
-const mat4 = require('gl-mat4')
-const vec4 = require('gl-vec4')
-const {
-  getViewMatrix,
-  getDistanceScales,
-  getProjectionParameters,
-  lngLatToWorld,
-  worldToPixels,
-  pixelsToWorld,
-  worldToLngLat
-} = require('viewport-mercator-project')
 
 const RETURN = `
 `
 
-module.exports = function createDlite (mapboxToken, initialViewState, mapStyle = 'mapbox://styles/mapbox/dark-v9', container = window) {
+module.exports.createRico = createRico
+module.exports.createDlite = createDlite
+
+function createDlite (mapboxToken, initialViewState, mapStyle = 'mapbox://styles/mapbox/dark-v9', container = document.body) {
   mapboxgl.accessToken = mapboxToken
 
   const { center, zoom, bearing, pitch } = initialViewState
 
-  const parentElement = container === window ? document.body : container
-  const mapContainer = parentElement.appendChild(document.createElement('div'))
+  const mapContainer = container.appendChild(document.createElement('div'))
   mapContainer.style.width = '100vw'
   mapContainer.style.height = '100vh'
   mapContainer.style.position = 'fixed'
@@ -48,46 +40,104 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
     mapbox.on('load', resolve)
   })
 
-  const dliteCanvas = parentElement.appendChild(document.createElement('canvas'))
-  dliteCanvas.setAttribute('id', 'dlite-canvas')
-  dliteCanvas.style['pointer-events'] = 'none' // let the user interact with the mapbox map below
-  const resizeCanvas = fit(dliteCanvas, container)
+  const rico = createRico(container)
+  rico.canvas.setAttribute('id', 'dlite-canvas')
+  rico.canvas.style['pointer-events'] = 'none' // let the user interact with the mapbox map below
 
-  const picoApp = PicoGL.createApp(dliteCanvas)
+  const viewProjMat = PicoMercator.pico_mercator_highPrecisionMat4()
+  function getCameraUniforms () {
+    const center = mapbox.getCenter().toArray()
+    const zoom = mapbox.getZoom()
+    const bearing = mapbox.getBearing()
+    const pitch = mapbox.getPitch()
+
+    PicoMercator.pico_mercator_mapboxViewProjectionMatrix(viewProjMat, center, zoom, pitch, bearing, rico.canvas.width, rico.canvas.height)
+
+    // a very strange hack, but the pico_mercator_uniforms function is supposed to take a callback which has uniforms passed to it
+    let uniforms = null
+    PicoMercator.pico_mercator_uniforms(center, zoom, viewProjMat, (u) => { uniforms = u })
+    return {
+      ...uniforms,
+      pixelsPerMeter: PicoMercator.pico_mercator_pixelsPerMeter(center[1], zoom)
+    }
+  }
+
+  function dlite (layerOpts) {
+    let vs = PicoMercator.pico_mercator_injectGLSLProjection(layerOpts.vs)
+    const splitAt = vs.startsWith('#version 300 es') ? vs.indexOf(RETURN) + 1 : 0
+    const head = vs.slice(0, splitAt)
+    const body = vs.slice(splitAt)
+    vs = head + DLITE_GLSL + body
+
+    const ricoRender = rico({ ...layerOpts, vs })
+
+    return function render (renderArgs) {
+      const cameraUniforms = getCameraUniforms()
+      return ricoRender({
+        ...renderArgs,
+        uniforms: {
+          ...(renderArgs.uniforms || {}),
+          ...cameraUniforms
+        }
+      })
+    }
+  }
+
+  Object.assign(dlite, rico, {
+    VERSION: VERSION,
+    mapbox: mapbox,
+    onload: onload
+    // todo: include project / unproject functions from mercator projection
+    // dlite.project
+    // dlite.unproject
+  })
+
+  return dlite
+}
+
+const DLITE_GLSL = `\
+uniform float pixelsPerMeter;
+
+`
+
+// -------- RICO (PicoGL in a thin wrapper to make it a bit more like REGL's API) --------------------
+
+const DEFAULT_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(0);
+}`
+
+// also accepts null values
+function isEqualVaryings (arr1, arr2) {
+  if (arr1 === null && arr2 === null) return true
+  if (arr1 === null || arr2 === null) return false
+  if (arr1.length !== arr2.length) return false
+  let j = 0
+  while (j < arr1.length) {
+    if (arr1[j] !== arr2[j]) return false
+    j += 1
+  }
+  return true
+}
+
+function createRico (container = document.body) {
+  const ricoCanvas = container.appendChild(document.createElement('canvas'))
+  const resizeCanvas = fit(ricoCanvas, container)
+
+  const picoApp = PicoGL.createApp(ricoCanvas)
 
   function resize () {
     resizeCanvas()
-    picoApp.viewport(0, 0, dliteCanvas.width, dliteCanvas.height)
+    picoApp.viewport(0, 0, ricoCanvas.width, ricoCanvas.height)
   }
 
   // TODO: provide a teardown function?
   window.addEventListener('resize', resize, false)
 
-  function getCameraUniforms () {
-    const [lng, lat] = mapbox.getCenter().toArray()
-    const zoom = mapbox.getZoom()
-    const bearing = mapbox.getBearing()
-    const pitch = mapbox.getPitch()
-
-    return getUniformsFromViewport({
-      width: dliteCanvas.width,
-      height: dliteCanvas.height,
-      longitude: lng,
-      latitude: lat,
-      bearing: bearing,
-      pitch: pitch,
-      zoom: zoom
-    })
-  }
-
-  // { vs, fs, uniforms, vertexArray, primitive, count, instanceCount, framebuffer, parameters }
-  function dlite (layerOpts) {
-    const splitAt = layerOpts.vs.startsWith('#version 300 es') ? layerOpts.vs.indexOf(RETURN) + 1 : 0
-    const head = layerOpts.vs.slice(0, splitAt)
-    const body = layerOpts.vs.slice(splitAt)
-    const vs = head + PROJECTION_GLSL + body
-    const fs = layerOpts.fs || DEFAULT_FRAGMENT_SHADER
-
+  // { vs, fs, uniforms, uniformBuffers, vertexArray, primitive, count, instanceCount, framebuffer, transform, blend, depth, rasterize, cullBackfaces }
+  function rico (layerOpts) {
     let timer = null
 
     let transformFeedback = null
@@ -103,18 +153,17 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
       }
     }
 
+    const vs = layerOpts.vs
+    const fs = layerOpts.fs || DEFAULT_FRAGMENT_SHADER
     const program = picoApp.createProgram(vs, fs, transformFeedbackVaryings)
     let drawCall = picoApp.createDrawCall(program, layerOpts.vertexArray)
 
-    const cameraProjectionUniformBuffer = picoApp.createUniformBuffer(cameraUniformTypesByPosition)
-
-    // can pass in any updates to draw call EXCEPT vs and fs changes:
-    // { uniforms, vertexArray, primitive, count, instanceCount, framebuffer, blend, depth, rasterize, cullBackfaces, parameters }
+    // can pass in any updates to draw call EXCEPT vs and fs changes
     return function render (renderOpts) {
       let lastTiming = null
       const useTimer = 'timer' in renderOpts ? renderOpts.timer : 'timer' in layerOpts ? layerOpts.timer : false
       if (useTimer) {
-        timer = timer || dlite.picoApp.createTimer()
+        timer = timer || picoApp.createTimer()
         if (timer.ready()) {
           const { gpuTime, cpuTime } = timer
           lastTiming = { gpuTime, cpuTime }
@@ -133,7 +182,7 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
         }
       }
 
-      // TODO: see if vertexArray has changed since last frame?? maybe end up owning vertexArray and attribute creation?
+      // TODO: maybe end up owning vertexArray and attribute creation?
       // TODO: should we write over the drawCall like this or have this just persist through the end of this frame's render?
       const hasNewVaryings = !isEqualVaryings(curProgramTransformFeedbackVaryings, renderTransformVaryings)
       if ('vertexArray' in renderOpts || hasNewVaryings) {
@@ -173,19 +222,19 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
       if (framebuffer === null) picoApp.defaultDrawFramebuffer()
       else picoApp.drawFramebuffer(framebuffer)
 
-      const cameraUniforms = getCameraUniforms()
-      for (let i = 0; i < cameraUniformsByPosition.length; i++) {
-        const cameraUniformName = cameraUniformsByPosition[i]
-        cameraProjectionUniformBuffer.set(i, cameraUniforms[cameraUniformName])
+      const uniformBlocks = {
+        ...(('uniformBlocks' in layerOpts) ? layerOpts.uniformBlocks : {}),
+        ...(('uniformBlocks' in renderOpts) ? renderOpts.uniformBlocks : {})
       }
-      cameraProjectionUniformBuffer.update()
-      drawCall.uniformBlock('DliteCameraProjectionUniforms', cameraProjectionUniformBuffer)
+      for (const name in uniformBlocks) {
+        drawCall.uniformBlock(name, uniformBlocks[name])
+      }
 
       const uniforms = {
         ...(('uniforms' in layerOpts) ? layerOpts.uniforms : {}),
         ...(('uniforms' in renderOpts) ? renderOpts.uniforms : {})
       }
-      // TODO: make this work for texture uniforms and uniform blocks
+      // TODO: make this work for texture uniforms
       for (const name in uniforms) {
         drawCall.uniform(name, uniforms[name])
       }
@@ -214,273 +263,16 @@ module.exports = function createDlite (mapboxToken, initialViewState, mapStyle =
     }
   }
 
-  dlite.VERSION = VERSION
-  dlite.mapbox = mapbox
-  dlite.onload = onload
-  dlite.picoApp = picoApp
-  dlite.gl = picoApp.gl
-  dlite.createVertexArray = picoApp.createVertexArray.bind(picoApp) // ??? merge other pico fns with the dlite object?
-  dlite.createVertexBuffer = picoApp.createVertexBuffer.bind(picoApp) // ??? merge other pico fns with the dlite object?
-  dlite.PicoGL = PicoGL
-  dlite.clear = function clear (...color) {
+  rico.picoApp = picoApp
+  rico.gl = picoApp.gl
+  rico.canvas = ricoCanvas
+  rico.createVertexArray = picoApp.createVertexArray.bind(picoApp) // ??? merge other pico fns with the rico object?
+  rico.createVertexBuffer = picoApp.createVertexBuffer.bind(picoApp) // ??? merge other pico fns with the rico object?
+  rico.createInterleavedBuffer = picoApp.createInterleavedBuffer.bind(picoApp) // ??? merge other pico fns with the rico object?
+  rico.PicoGL = PicoGL
+  rico.clear = function clear (...color) {
     picoApp.clearColor(...color)
     picoApp.clear()
   }
-  // todo: include project / unproject functions from mercator projection
-  // dlite.project
-  // dlite.unproject
-  return dlite
-}
-
-// also accepts null values
-function isEqualVaryings (arr1, arr2) {
-  if (arr1 === null && arr2 === null) return true
-  if (arr1 === null || arr2 === null) return false
-  if (arr1.length !== arr2.length) return false
-  let j = 0
-  while (j < arr1.length) {
-    if (arr1[j] !== arr2[j]) return false
-    j += 1
-  }
-  return true
-}
-
-// this must match the order expected in the GLSL
-const cameraUniformsByPosition = [
-  'project_uModelMatrix',
-  'project_uViewProjectionMatrix',
-  'project_uCenter',
-  'project_uCommonUnitsPerMeter', // NOTE: currently only z is used
-  'project_uCommonUnitsPerWorldUnit',
-  'project_uCommonUnitsPerWorldUnit2',
-  'project_uCoordinateOrigin',
-  'project_uScale',
-  'project_uLngLatAutoOffset'
-]
-// this must match the order expected in the GLSL
-const cameraUniformTypesByPosition = [
-  PicoGL.FLOAT_MAT4,
-  PicoGL.FLOAT_MAT4,
-  PicoGL.FLOAT_VEC4,
-  PicoGL.FLOAT_VEC4, // vec3 but passed as vec4 to keep proper std140 buffer alignment
-  PicoGL.FLOAT_VEC4, // vec3 but passed as vec4 to keep proper std140 buffer alignment
-  PicoGL.FLOAT_VEC4, // vec3 but passed as vec4 to keep proper std140 buffer alignment
-  PicoGL.FLOAT_VEC2,
-  PicoGL.FLOAT,
-  PicoGL.BOOL
-]
-
-const PROJECTION_GLSL = `\
-layout(std140) uniform DliteCameraProjectionUniforms {
-  mat4 project_uModelMatrix;
-  mat4 project_uViewProjectionMatrix;
-  vec4 project_uCenter;
-  vec4 project_uCommonUnitsPerMeter; // vec3 but passed as vec4 to keep proper std140 buffer alignment
-  vec4 project_uCommonUnitsPerWorldUnit; // vec3 but passed as vec4 to keep proper std140 buffer alignment
-  vec4 project_uCommonUnitsPerWorldUnit2; // vec3 but passed as vec4 to keep proper std140 buffer alignment
-  vec2 project_uCoordinateOrigin;
-  float project_uScale;
-  bool project_uLngLatAutoOffset;
-};
-
-const float TILE_SIZE = 512.0;
-const float PI = 3.1415926536;
-const float WORLD_SCALE = TILE_SIZE / (PI * 2.0);
-
-float project_size(float meters) {
-  return meters * project_uCommonUnitsPerMeter.z;
-}
-
-vec2 project_mercator_(vec2 lnglat) {
-  return vec2(
-    radians(lnglat.x) + PI, PI - log(tan(PI * 0.25 + radians(lnglat.y) * 0.5))
-  );
-}
-
-vec4 project_offset_(vec4 offset) {
-  float dy = clamp(offset.y, -1., 1.);
-  vec3 commonUnitsPerWorldUnit = project_uCommonUnitsPerWorldUnit.xyz + project_uCommonUnitsPerWorldUnit2.xyz * dy;
-  return vec4(offset.xyz * commonUnitsPerWorldUnit, offset.w);
-}
-
-vec4 project_position(vec4 position) {
-  if (project_uLngLatAutoOffset) {
-    vec2 xy = position.xy - project_uCoordinateOrigin.xy;
-    return project_offset_(vec4(xy, position.zw));
-  }
-  return project_uModelMatrix * vec4(
-    project_mercator_(position.xy) * WORLD_SCALE * project_uScale, project_size(position.z), position.w
-  );
-}
-
-vec4 project_position_to_clipspace(vec3 position, vec3 offset) {
-  vec4 projectedPosition = project_position(vec4(position, 1.0));
-  vec4 commonPosition = vec4(projectedPosition.xyz + offset, 1.0);
-  return project_uViewProjectionMatrix * commonPosition + project_uCenter;
-}
-
-vec4 project_position_to_clipspace(vec3 position) {
-  vec3 offset = vec3(0);
-  return project_position_to_clipspace(position, offset);
-}
-
-`
-
-const DEFAULT_FRAGMENT_SHADER = `#version 300 es
-precision highp float;
-out vec4 fragColor;
-void main() {
-  fragColor = vec4(0);
-}`
-
-// --------------------------------------------------------------------------------------------------
-
-// To quickly set a vector to zero
-const ZERO_VECTOR = [0, 0, 0, 0]
-// 4x4 matrix that drops 4th component of vector
-const VECTOR_TO_POINT_MATRIX = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
-const IDENTITY_MATRIX = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
-const DEFAULT_COORDINATE_ORIGIN = [0, 0]
-
-// Based on viewport-mercator-project/test/fp32-limits.js
-const LNGLAT_AUTO_OFFSET_ZOOM_THRESHOLD = 12
-
-/**
- * Projects xyz (possibly latitude and longitude) to pixel coordinates in window
- * using viewport projection parameters
- * - [longitude, latitude] to [x, y]
- * - [longitude, latitude, Z] => [x, y, z]
- * Note: By default, returns top-left coordinates for canvas/SVG type render
- *
- * @param {Array} lngLatZ - [lng, lat] or [lng, lat, Z]
- * @param {Object} opts - options
- * @param {Object} opts.topLeft=true - Whether projected coords are top left
- * @return {Array} - [x, y] or [x, y, z] in top left coords
- */
-function project (xyz, { width, height, latitude, longitude, scale, pitch, bearing, altitude, nearZMultiplier, farZMultiplier, topLeft = true } = {}) {
-  const projectionMatrix = getProjectionMatrix({ width, height, pitch, altitude, nearZMultiplier, farZMultiplier })
-  const viewMatrix = getCenteredViewMatrix({ height, pitch, bearing, altitude, scale, longitude, latitude })
-  const pixelProjectionMatrix = getPixelProjectionMatrix({ width, height, viewMatrix, projectionMatrix })
-  const worldPosition = projectPosition(xyz, { latitude, longitude, scale })
-  const coord = worldToPixels(worldPosition, pixelProjectionMatrix)
-
-  const [x, y] = coord
-  const y2 = topLeft ? y : height - y
-  return xyz.length === 2 ? [x, y2] : [x, y2, coord[2]]
-}
-
-/**
- * Unproject pixel coordinates on screen onto world coordinates,
- * (possibly [lon, lat]) on map.
- * - [x, y] => [lng, lat]
- * - [x, y, z] => [lng, lat, Z]
- * @param {Array} xyz -
- * @param {Object} opts - options
- * @param {Object} opts.topLeft=true - Whether origin is top left
- * @return {Array|null} - [lng, lat, Z] or [X, Y, Z]
- */
-function unproject (xyz, { width, height, latitude, longitude, scale, pitch, bearing, altitude, nearZMultiplier, farZMultiplier, topLeft = true, targetZ } = {}) {
-  const [x, y, z] = xyz
-
-  const distanceScales = getDistanceScales({ latitude, longitude, scale, highPrecision: true })
-  const y2 = topLeft ? y : height - y
-  const targetZWorld = targetZ && targetZ * distanceScales.pixelsPerMeter[2]
-
-  const projectionMatrix = getProjectionMatrix({ width, height, pitch, altitude, nearZMultiplier, farZMultiplier })
-  const viewMatrix = getCenteredViewMatrix({ height, pitch, bearing, altitude, scale, longitude, latitude })
-  const pixelProjectionMatrix = getPixelProjectionMatrix({ width, height, viewMatrix, projectionMatrix })
-  const pixelUnprojectionMatrix = mat4.invert([], pixelProjectionMatrix)
-
-  const coord = pixelsToWorld([x, y2, z], pixelUnprojectionMatrix, targetZWorld)
-  const [X, Y] = worldToLngLat(coord, scale)
-  const Z = (xyz[2] || 0) * distanceScales.metersPerPixel[2]
-
-  if (Number.isFinite(z)) {
-    return [X, Y, Z]
-  }
-  return Number.isFinite(targetZ) ? [X, Y, targetZ] : [X, Y]
-}
-
-function getUniformsFromViewport (viewState) {
-  const modelMatrix = IDENTITY_MATRIX
-  // might need nearZMultiplier & farZMultiplier to be customizable to match mapbox projection matrix?
-  const { bearing, height, latitude, longitude, pitch, width, zoom } = viewState
-  const scale = Math.pow(2, zoom)
-  const altitude = 1.5
-  const nearZMultiplier = 0.1
-  const farZMultiplier = 10
-
-  const projectionMatrix = getProjectionMatrix({ width, height, pitch, altitude, nearZMultiplier, farZMultiplier })
-  const viewMatrix = getCenteredViewMatrix({ height, pitch, bearing, altitude, scale, longitude, latitude })
-
-  let viewProjectionMatrix = mat4.multiply([], projectionMatrix, viewMatrix)
-  let projectionCenter = ZERO_VECTOR
-  let shaderCoordinateOrigin = DEFAULT_COORDINATE_ORIGIN
-
-  const useLngLatAutoOffset = zoom >= LNGLAT_AUTO_OFFSET_ZOOM_THRESHOLD
-  if (useLngLatAutoOffset) {
-    shaderCoordinateOrigin = [Math.fround(longitude), Math.fround(latitude)]
-
-    const positionCommonSpace = projectPosition(shaderCoordinateOrigin, { latitude, longitude, scale })
-    positionCommonSpace[3] = 1
-    projectionCenter = vec4.transformMat4([], positionCommonSpace, viewProjectionMatrix)
-
-    viewProjectionMatrix = mat4.multiply([], projectionMatrix, viewMatrix)
-    // Zero out 4th coordinate ("after" model matrix) - avoids further translations
-    viewProjectionMatrix = mat4.multiply([], viewProjectionMatrix, VECTOR_TO_POINT_MATRIX)
-  }
-
-  // Calculate projection pixels per unit
-  const distanceScales = getDistanceScales({ latitude, longitude, scale, highPrecision: true })
-  const distanceScalesAtOrigin = getDistanceScales({
-    longitude: shaderCoordinateOrigin[0],
-    latitude: shaderCoordinateOrigin[1],
-    scale: scale,
-    highPrecision: true
-  })
-
-  return {
-    project_uModelMatrix: modelMatrix,
-    project_uLngLatAutoOffset: useLngLatAutoOffset,
-    project_uCenter: projectionCenter,
-    project_uCommonUnitsPerMeter: distanceScales.pixelsPerMeter,
-    project_uCommonUnitsPerWorldUnit: distanceScalesAtOrigin.pixelsPerDegree,
-    project_uCommonUnitsPerWorldUnit2: distanceScalesAtOrigin.pixelsPerDegree2,
-    project_uScale: scale, // This is the mercator scale (2 ** zoom)
-    project_uViewProjectionMatrix: viewProjectionMatrix,
-    project_uCoordinateOrigin: shaderCoordinateOrigin
-  }
-}
-
-// Make a centered version of the matrix for projection modes without an offset
-function getCenteredViewMatrix ({ height, pitch, bearing, altitude, scale, longitude, latitude }) {
-  const vm = getViewMatrix({ height, pitch, bearing, altitude })
-  // Flip Y to match the orientation of the Mercator plane
-  const viewMatrixUncentered = mat4.scale([], vm, [1, -1, 1])
-  const [centerX, centerY] = lngLatToWorld([longitude, latitude], scale)
-  const translate = [-centerX, -centerY, 0]
-  return mat4.translate(viewMatrixUncentered, viewMatrixUncentered, translate)
-}
-
-function getProjectionMatrix ({ width, height, pitch, altitude, nearZMultiplier, farZMultiplier }) {
-  const { fov, near, far } = getProjectionParameters({ width, height, pitch, altitude, nearZMultiplier, farZMultiplier })
-  return mat4.perspective([], fov, width / height, near, far)
-}
-
-// matrix for conversion from world location to screen (pixel) coordinates
-function getPixelProjectionMatrix ({ width, height, viewMatrix, projectionMatrix }) {
-  const viewProjectionMatrix = mat4.multiply([], projectionMatrix, viewMatrix)
-  const viewportMatrix = mat4.identity()
-  const pixelProjectionMatrix = mat4.identity() // matrix from world space to viewport.
-  mat4.scale(viewportMatrix, viewportMatrix, [width / 2, -height / 2, 1])
-  mat4.translate(viewportMatrix, viewportMatrix, [1, -1, 0])
-  mat4.multiply(pixelProjectionMatrix, viewportMatrix, viewProjectionMatrix)
-  return pixelProjectionMatrix
-}
-
-function projectPosition (xyz, { latitude, longitude, scale }) {
-  const distanceScales = getDistanceScales({ latitude, longitude, scale, highPrecision: true })
-  const [X, Y] = lngLatToWorld(xyz, scale)
-  const Z = (xyz[2] || 0) * distanceScales.pixelsPerMeter[2]
-  return [X, Y, Z]
+  return rico
 }

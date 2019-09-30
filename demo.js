@@ -1,7 +1,7 @@
 /* global fetch */
 
 const { GUI } = require('dat.gui')
-const createDlite = require('./create-dlite')
+const { createDlite } = require('./create-dlite')
 const createLoopToggle = require('./helpers/create-loop')
 const { createSpring } = require('spring-animator')
 
@@ -82,8 +82,9 @@ fetch(DATA_PATH)
         vColor = mix(BLUE, YELLOW, t) / 255.0;
 
         vec3 pos = vec3(iPosition, iHour * height);
-        vec3 offset = vec3(position, 0.0) * project_size(size);
-        gl_Position = project_position_to_clipspace(pos, offset);
+        vec3 offset = vec3(position, 0.0) * size * pixelsPerMeter;
+        vec4 worldPos = pico_mercator_lngLatToWorld(pos);
+        gl_Position = pico_mercator_worldToClip(vec4(worldPos.xyz + offset, worldPos.w));
       }`,
 
       fs: `#version 300 es

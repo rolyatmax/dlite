@@ -1,5 +1,5 @@
 # dlite
-deck.gl, but lighter
+deck.gl, but lighter (thanks to PicoGL and PicoMercator)
 
 ```bash
 $ npm i && npm start
@@ -30,8 +30,9 @@ const renderPoints = dlite({
   layout(location=0) in vec2 position;
   uniform float size;
   void main() {
-    vec3 offset = vec3(0.0);
-    gl_Position = project_position_to_clipspace(position, offset);
+    vec3 offset = vec3(1.0) * pixelsPerMeter;
+    vec4 worldPos = pico_mercator_lngLatToWorld(position) + vec4(offset, 0);
+    gl_Position = pico_mercator_worldToClip(worldPos);
     gl_PointSize = size;
   }`,
 
@@ -65,7 +66,7 @@ renderPoints({
 
 ### API
 
-#### `createDlite(mapboxToken, initialViewState)`
+#### `createDlite(mapboxToken, initialViewState, mapStyle, container)`
 
 Takes a `mapboxToken` (`string`) and `initialViewState` (`object`) which looks like:
 ```js
@@ -76,6 +77,8 @@ Takes a `mapboxToken` (`string`) and `initialViewState` (`object`) which looks l
   pitch: pitch // in degrees, number between 0 and 60
 }
 ```
+
+Optionally takes a `mapStyle` (a `mapbox://styles/` path which defaults to `'mapbox://styles/mapbox/dark-v9'`) and a `container` (which defaults to the window).
 
 Returns a `dlite` function which can be used to create WebGL resources and render functions.
 
@@ -101,7 +104,9 @@ Takes render `options` which are used to generate a render function. The render 
     varyingName1: vertexBuffer1,
   },
   uniforms: uniformsObject, // a JavaScript object with uniforms (optional)
+  uniformBlocks: uniformBlock, // a PicoGL uniformBlock object - dlite.picoApp.createUniformBlock() (optional)
   count: vertexCount, // the number of attribute vertices to draw (optional)
+  timer: false, // a boolean to turn on performance timing (if true, latest timings are returned from each render()) (optional)
   instanceCount: instanceCount, // the number of instances to draw (optional)
   primitive: glDrawPrimitive, // the GL draw primitive, default is GL.TRIANGLES (optional)
   framebuffer: framebuffer, // a PicoGL framebuffer or null to draw to the default framebuffer (optional)
@@ -153,41 +158,42 @@ dlite.clear(1, 1, 1, 1)
 ```
 
 
-### Shader functions
+### Shader functions and uniforms
 
-These functions are available within the vertex shader and can be used to project lon/lats to screen space, and to scale
-`meters` to "world" space.
+These functions are available within the vertex shader and can be used to project lng/lats to world and screen space.
 
-#### `vec4 project_position_to_clipspace(vec3 position[, vec3 offset])`
+#### `vec4 pico_mercator_lngLatToWorld(vec3 position)`
 
-Used to project lon/lat (and height in meters) to screenspace with an optional "world space" `offset`. For meter offsets,
-you'll want to first scale `offset` using `project_size`.
+Used to project lng/lat (and height in meters) to world space.
 
-#### `float project_size(float meters)`
+#### `vec4 pico_mercator_worldToClip(vec4 worldPosition)`
 
-Converts `meters` to "world space", which is usually used to scale an offset which is then passed to
-`project_position_to_clipspace`.
+Used to world space to clipspace.
+
+#### `float pixelsPerMeter`
+
+Uniform used to convert `meters` to "world space", which is usually used to scale an offset which is then added to a `worldPosition` before projected to clipspace with `pico_mercator_worldToClip`.
 
 Example:
 ```glsl
 vec3 position = vec3(longitude, latitude, heightInMeters);
-vec3 offset = vec3(-1, 1, 0) * project_size(meters);
-gl_Position = project_position_to_clipspace(position, offset);
+vec3 offset = vec3(-1, 1, 0) * meters * pixelsPerMeter;
+vec4 worldPosition = pico_mercator_lngLatToWorld(position) + vec4(offset, 0);
+gl_Position = pico_mercator_worldToClip(worldPosition);
 ```
 
 ------------
 
 ### To do
  - [ ] consider using deck's map controller instead of mapbox because mapbox has such a lag it causes the two canvas to go out of sync
- - [ ] figure out where `altitude` comes from in web-mercator-projection stuff (from Tarek: it's always 1.5x the screenheight?)
- - [ ] try rendering to framebuffer
  - [ ] make mapbox optional (show no map)
  - [ ] return project/unproject fns
  - [ ] create/manage vertexArrayObject/attributes for user?
- - [ ] experiment with exporting layers
  - [ ] create defaults to run on every call to make sure draw call state doesn't bleed into each other
- - [ ] simplify camera uniforms (see TODOs in src)
- - [ ] update docs for timer
+ - [X] try rendering to framebuffer
+ - [X] experiment with exporting layers
+ - [X] simplify camera uniforms (see TODOs in src)
+ - [X] update docs for timer
  - [X] make camera uniforms a uniform block?
  - [X] create default fragment shader for transform feedback
  - [x] support transform feedback
